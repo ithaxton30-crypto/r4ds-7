@@ -11,3 +11,116 @@ execute:
 library(tidyverse)
 library(arrow)
 ```
+
+```{r}
+open_dataset("data/daily_prices.parquet")$schema
+```
+
+```{r}
+prices <- read_parquet("data/daily_prices.parquet")
+metadata <- read_parquet("data/coin_metadata.parquet")
+categories <- read_parquet("data/categories.parquet")
+
+crypto <- prices |>
+  mutate(date = as.Date(date_raw)) |>
+  left_join(metadata, by = "coin_id") |>
+  left_join(
+    categories |> rename(category_description = description),
+    by = "category_id"
+  )
+```
+
+```{r}
+category_order <- crypto |>
+  group_by(date, category_name) |>
+  summarise(daily_market_cap_usd = sum(market_cap_usd, na.rm = TRUE), .groups = "drop") |>
+  group_by(category_name) |>
+  summarise(typical_market_cap_usd = median(daily_market_cap_usd), .groups = "drop") |>
+  arrange(desc(typical_market_cap_usd)) |>
+  pull(category_name)
+
+market_share <- crypto |>
+  group_by(date, category_name) |>
+  summarise(market_cap_usd = sum(market_cap_usd, na.rm = TRUE), .groups = "drop") |>
+  mutate(category_name = factor(category_name, levels = category_order))
+
+events <- tibble(
+  start = as.Date(c("2022-05-07", "2022-11-08")),
+  end = as.Date(c("2022-05-12", "2022-11-11")),
+  label = c("Luna / UST crash", "FTX collapse"),
+  label_date = as.Date(c("2022-05-09", "2022-11-09")),
+  label_y = c(0.98, 0.88)
+)
+
+ggplot(market_share, aes(x = date, y = market_cap_usd, fill = category_name)) +
+  geom_area(position = "fill") +
+  geom_rect(
+    data = events,
+    aes(xmin = start, xmax = end, ymin = 0, ymax = 1),
+    inherit.aes = FALSE,
+    fill = "grey20",
+    alpha = 0.25
+  ) +
+  geom_vline(
+    data = events,
+    aes(xintercept = start),
+    inherit.aes = FALSE,
+    color = "grey20",
+    linetype = "dashed"
+  ) +
+  geom_vline(
+    data = events,
+    aes(xintercept = end),
+    inherit.aes = FALSE,
+    color = "grey20",
+    linetype = "dashed"
+  ) +
+  geom_label(
+    data = events,
+    aes(x = label_date, y = label_y, label = label),
+    inherit.aes = FALSE,
+    size = 3,
+    vjust = 1
+  ) +
+  scale_fill_viridis_d(option = "D", end = 0.85, name = "Category") +
+  scale_y_continuous(labels = scales::label_percent()) +
+  labs(
+    title = "Crypto market capitalization by category",
+    subtitle = "Daily share of recorded market cap; category shares sum to 100% each day",
+    x = NULL,
+    y = "Share of total crypto market cap",
+    caption = "Source: daily_prices.parquet, joined with coin_metadata.parquet and categories.parquet."
+  )
+```
+
+```{r}
+open_dataset("data/daily_prices.parquet") |>
+  to_duckdb() |>
+  filter(date_raw >= "2025-01-01") |>
+  group_by(coin_id) |>
+  summarise(
+    avg_market_cap_usd = mean(market_cap_usd, na.rm = TRUE),
+    days = n_distinct(date_raw)
+  ) |>
+  arrange(desc(avg_market_cap_usd)) |>
+  collect()
+```
+
+```{r}
+metadata |>
+  mutate(launch_date_parsed = coalesce(
+    as.Date(launch_date, format = "%Y-%m-%d"),
+    as.Date(launch_date, format = "%B %d, %Y")
+  )) |>
+  arrange(launch_date_parsed) |>
+  select(coin_id, coin_name, launch_date, launch_date_parsed)
+```
+
+```{r}
+#| cache: true
+prices |>
+  filter(coin_id == "btc") |>
+  mutate(date = as.Date(date_raw)) |>
+  ggplot(aes(x = date, y = price_usd)) +
+  geom_line()
+```
